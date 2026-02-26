@@ -129,9 +129,9 @@ jobs:
               --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
               --name "${{ env.ACI_NAME }}" \
               --query instanceView.state \
-              --output tsv)
+              --output tsv 2>/dev/null || echo "NotFound")
             echo "Current state: $STATE"
-            if [[ "$STATE" == "Terminated" || "$STATE" == "Stopped" ]]; then
+            if [[ "$STATE" == "Terminated" || "$STATE" == "Stopped" || "$STATE" == "NotFound" ]]; then
               echo "Container finished."
               break
             fi
