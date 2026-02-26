@@ -1,3 +1,19 @@
+import { chromium } from "playwright";
+
+const email = process.env.FACEBOOK_EMAIL ?? "";
+const password = process.env.FACEBOOK_PASSWORD ?? "";
+const webhookUrl = process.env.WEBHOOK_URL ?? "";
+
+function isUsableRequest(request) {
+  if (!request.url().includes("facebook.com/api/graphql")) return false;
+  if (request.method() !== "POST") return false;
+
+  const body = request.postData() ?? "";
+  if (!body.trim()) return false;
+
+  return true;
+}
+
 async function main() {
   const browser = await chromium.launch({
     headless: false,
@@ -8,16 +24,20 @@ async function main() {
   const page = await context.newPage();
 
   try {
-    // Start capturing BEFORE login so we don't miss anything
     const sessionPromise = new Promise((resolve) => {
-      const handler = (request) => {
+      const handler = async (request) => {
         if (!isUsableRequest(request)) return;
-        console.log(
-          "[script] Captured valid GraphQL request with cookie + body.",
-        );
+
+        const cookies = await context.cookies("https://www.facebook.com");
+        if (!cookies.length) return;
+
+        const cookieHeader = cookies
+          .map((c) => `${c.name}=${c.value}`)
+          .join("; ");
         page.off("request", handler);
+
         resolve({
-          headers: request.headers(),
+          headers: { ...request.headers(), cookie: cookieHeader },
           body: request.postData(),
         });
       };
@@ -38,46 +58,32 @@ async function main() {
       try {
         await loginBtn.waitFor({ state: "visible", timeout: 8_000 });
         await loginBtn.scrollIntoViewIfNeeded();
-        console.log("[Facebook login] Clicking login button");
+        console.log("[script] Clicking login button...");
         await loginBtn.click();
       } catch {
-        console.log(
-          "[Facebook login] No visible button; submitting form via JS",
-        );
+        console.log("[script] No visible button; submitting form via JS");
         await page
           .locator('input[name="email"]')
           .evaluate((el) => el.form?.submit());
       }
     }
 
+    // Wait for session — handles both instant capture and post-CAPTCHA/2FA capture.
+    // The browser stays open so the user can complete any verification manually.
     console.log(
-      "[script] Waiting for login to complete (handle any CAPTCHA via noVNC)...",
+      "[script] Waiting for session capture (complete any CAPTCHA/2FA if prompted)...",
     );
-    await page.waitForURL(
-      (url) => /^https:\/\/www\.facebook\.com\/?$/.test(url.toString()),
-      { timeout: 30 * 60 * 1_000 },
-    );
-    console.log("[script] Login detected! Navigating to Marketplace...");
-
-    // Navigate to marketplace to trigger graphql requests
-    page
-      .goto("https://www.facebook.com/marketplace/", {
-        waitUntil: "domcontentloaded",
-      })
-      .catch(() => {});
-
-    // Wait up to 2 minutes for a valid request
     const sessionData = await Promise.race([
       sessionPromise,
       new Promise((_, reject) =>
         setTimeout(
-          () => reject(new Error("Capture timeout after 2 minutes")),
-          2 * 60 * 1_000,
+          () => reject(new Error("Capture timeout after 10 minutes")),
+          10 * 60 * 1_000,
         ),
       ),
     ]);
 
-    console.log("[script] Sending session to webhook...");
+    console.log("[script] Session captured! Sending to webhook...");
     const response = await fetch(webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -94,11 +100,14 @@ async function main() {
     if (!response.ok) {
       throw new Error(`Webhook returned ${response.status}: ${responseText}`);
     }
+
+    console.log("[script] Done!");
   } catch (err) {
     console.error("[script]", err);
     process.exit(1);
   } finally {
-    console.log("[script] Done. Closing browser.");
     await browser.close();
   }
 }
+
+main();

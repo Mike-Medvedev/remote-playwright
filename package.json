@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "run:automation": "node playwright/script.js"
+    "start": "node playwright/script.js"
   },
   "keywords": [],
   "author": "",
