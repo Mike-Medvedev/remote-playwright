@@ -116,12 +116,20 @@ jobs:
 
       - name: Wait for container to finish
         run: |
-          az container wait \
-            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
-            --name "${{ env.ACI_NAME }}" \
-            --custom "instanceView.state=='Terminated'" \
-            --interval 30 \
-            --timeout 7200
+          echo "Waiting for container to complete..."
+          while true; do
+            STATE=$(az container show \
+              --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+              --name "${{ env.ACI_NAME }}" \
+              --query instanceView.state \
+              --output tsv)
+            echo "Current state: $STATE"
+            if [[ "$STATE" == "Terminated" || "$STATE" == "Stopped" ]]; then
+              echo "Container finished."
+              break
+            fi
+            sleep 30
+          done
 
       - name: Delete container
         if: always()
