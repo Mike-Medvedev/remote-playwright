@@ -8,7 +8,7 @@
  * Requires: npm install playwright
  * Run: FACEBOOK_EMAIL=... FACEBOOK_PASSWORD=... WEBHOOK_URL=... node scripts/refresh-session-playwright.js
  */
-const { chromium } = require("playwright");
+import { chromium } from "playwright";
 
 const email = process.env.FACEBOOK_EMAIL ?? "";
 const password = process.env.FACEBOOK_PASSWORD ?? "";
