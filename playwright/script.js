@@ -1,11 +1,8 @@
-/**
- * Playwright automation: headed Chromium on DISPLAY, Facebook login, then pause for manual use via noVNC.
- * Requires: DISPLAY, FACEBOOK_EMAIL, FACEBOOK_PASSWORD (env).
- */
 import { chromium } from "playwright";
 
 const email = process.env.FACEBOOK_EMAIL || "";
 const password = process.env.FACEBOOK_PASSWORD || "";
+const webhookUrl = process.env.WEBHOOK_URL || "";
 
 async function main() {
   const browser = await chromium.launch({
@@ -42,22 +39,63 @@ async function main() {
           .locator('input[name="email"]')
           .evaluate((el) => el.form?.submit());
       }
-      await page.waitForTimeout(5000);
     } else {
       console.log(
         "[script] FACEBOOK_EMAIL/FACEBOOK_PASSWORD not set; open login page for manual use.",
       );
     }
 
-    // Pause indefinitely so you can interact via noVNC (e.g. 24h)
     console.log(
-      "[script] Pausing for manual interaction via noVNC. Continue automation after timeout.",
+      "[script] Waiting for login to complete (handle any CAPTCHA via noVNC)...",
     );
-    await page.waitForTimeout(5 * 60 * 60 * 1000);
+    await page.waitForURL(
+      (url) =>
+        url.toString() === "https://www.facebook.com/" ||
+        url.toString() === "https://www.facebook.com",
+      { timeout: 10 * 60 * 1000 },
+    );
+    console.log(
+      "[script] Login detected! Navigating to marketplace to capture session...",
+    );
+
+    // Set up request listener BEFORE navigating so we don't miss anything
+    const sessionData = await new Promise((resolve) => {
+      page.on("request", (request) => {
+        if (
+          request.url().includes("facebook.com/api/graphql") &&
+          request.method() === "POST" &&
+          request.postData()
+        ) {
+          resolve({
+            headers: request.headers(),
+            body: request.postData(),
+          });
+        }
+      });
+
+      // Navigate to marketplace to trigger graphql requests
+      page.goto("https://www.facebook.com/marketplace/", {
+        waitUntil: "domcontentloaded",
+      });
+    });
+
+    console.log("[script] Session captured, sending to webhook...");
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        headers: sessionData.headers,
+        body: sessionData.body,
+        capturedAt: new Date().toISOString(),
+      }),
+    });
+
+    const responseText = await response.text();
+    console.log(`[script] Webhook response ${response.status}:`, responseText);
   } catch (err) {
     console.error("[script]", err);
   } finally {
-    console.log("[script] Resuming automation after pause.");
+    console.log("[script] Done. Closing browser.");
     await browser.close();
   }
 }

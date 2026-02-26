@@ -91,6 +91,7 @@ jobs:
               "VNC_PASSWORD=${{ secrets.VNC_PASSWORD }}" \
               "FACEBOOK_EMAIL=${{ secrets.FACEBOOK_EMAIL }}" \
               "FACEBOOK_PASSWORD=${{ secrets.FACEBOOK_PASSWORD }}" \
+              "WEBHOOK_URL=${{ secrets.WEBHOOK_BASE_URL }}/refresh" \
             --registry-login-server "index.docker.io" \
             --registry-username "${{ secrets.DOCKERHUB_USERNAME }}" \
             --registry-password "${{ secrets.DOCKERHUB_TOKEN }}" \
@@ -113,6 +114,12 @@ jobs:
           echo "  noVNC URL: http://${{ steps.deploy.outputs.aci_ip }}:6080"
           echo "  Use your VNC_PASSWORD to log in."
           echo "========================================="
+
+      - name: Notify of container IP
+        run: |
+          curl -X POST ${{ secrets.WEBHOOK_BASE_URL }}/webhook/container-started \
+            -H "Content-Type: application/json" \
+            -d "{\"ip\": \"${{ steps.deploy.outputs.aci_ip }}\", \"novnc_url\": \"http://${{ steps.deploy.outputs.aci_ip }}:6080\"}"
 
       - name: Wait for container to finish
         run: |
