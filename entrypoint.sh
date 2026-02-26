@@ -71,3 +71,8 @@ cleanup() {
     echo "[entrypoint] Shutdown complete."
 }
 trap cleanup SIGTERM SIGINT EXIT
+
+# --- 4. Run Playwright script ---
+echo "[entrypoint] Starting Playwright script..."
+node /app/playwright/script.js
+echo "[entrypoint] Playwright script finished."
