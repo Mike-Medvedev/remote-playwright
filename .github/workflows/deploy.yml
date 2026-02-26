@@ -137,12 +137,16 @@ jobs:
               --query instanceView.state \
               --output tsv 2>/dev/null || echo "NotFound")
             echo "Current state: $STATE"
-            if [[ "$STATE" == "Terminated" || "$STATE" == "Stopped" || "$STATE" == "NotFound" || "$STATE" == "Succeeded" ]]; then
-              echo "Container finished."
+            if [[ "$STATE" == "Terminated" || "$STATE" == "Stopped" || "$STATE" == "NotFound" || "$STATE" == "Succeeded" || "$STATE" == "Failed" ]]; then
+              echo "Container finished with state: $STATE"
               break
             fi
             sleep 30
           done
+          if [[ "$STATE" == "Failed" ]]; then
+            echo "Container exited with failure."
+            exit 1
+          fi
 
       - name: Delete container
         if: always()
