@@ -91,7 +91,7 @@ jobs:
               "VNC_PASSWORD=${{ secrets.VNC_PASSWORD }}" \
               "FACEBOOK_EMAIL=${{ secrets.FACEBOOK_EMAIL }}" \
               "FACEBOOK_PASSWORD=${{ secrets.FACEBOOK_PASSWORD }}" \
-              "WEBHOOK_URL=${{ secrets.WEBHOOK_BASE_URL }}/refresh" \
+              "WEBHOOK_URL=${{ secrets.WEBHOOK_BASE_URL }}/webhook/refresh" \
             --registry-login-server "index.docker.io" \
             --registry-username "${{ secrets.DOCKERHUB_USERNAME }}" \
             --registry-password "${{ secrets.DOCKERHUB_TOKEN }}" \

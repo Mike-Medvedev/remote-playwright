@@ -73,10 +73,12 @@ async function main() {
         }
       });
 
-      // Navigate to marketplace to trigger graphql requests
-      page.goto("https://www.facebook.com/marketplace/", {
-        waitUntil: "domcontentloaded",
-      });
+      // Don't await here, intentional
+      page
+        .goto("https://www.facebook.com/marketplace/", {
+          waitUntil: "domcontentloaded",
+        })
+        .catch(() => {}); // swallow the abort error
     });
 
     console.log("[script] Session captured, sending to webhook...");
