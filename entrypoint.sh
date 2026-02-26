@@ -74,5 +74,6 @@ trap cleanup SIGTERM SIGINT EXIT
 
 # --- 4. Run Playwright script ---
 echo "[entrypoint] Starting Playwright script..."
+sleep 10
 node /app/playwright/script.js
 echo "[entrypoint] Playwright script finished."
