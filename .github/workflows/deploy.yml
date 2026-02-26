@@ -117,9 +117,15 @@ jobs:
 
       - name: Notify of container IP
         run: |
+          ACI_IP=$(az container show \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ env.ACI_NAME }}" \
+            --query ipAddress.ip \
+            --output tsv)
+
           curl -X POST ${{ secrets.WEBHOOK_BASE_URL }}/webhook/container-started \
             -H "Content-Type: application/json" \
-            -d "{\"ip\": \"${{ steps.deploy.outputs.aci_ip }}\", \"novnc_url\": \"http://${{ steps.deploy.outputs.aci_ip }}:6080\"}"
+            -d "{\"ip\": \"${ACI_IP}\", \"novnc_url\": \"http://${ACI_IP}:6080\"}"
 
       - name: Wait for container to finish
         run: |
