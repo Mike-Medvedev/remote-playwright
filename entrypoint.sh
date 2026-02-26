@@ -71,15 +71,3 @@ cleanup() {
     echo "[entrypoint] Shutdown complete."
 }
 trap cleanup SIGTERM SIGINT EXIT
-
-# --- 4. Run Playwright script ---
-echo "[entrypoint] Starting Playwright script..."
-node /app/playwright/script.js &
-NODE_PID=$!
-
-wait "${NODE_PID}"
-echo "[entrypoint] Playwright script finished. Container staying alive for VNC inspection."
-
-# Remove EXIT from trap so tail -f keeps running
-trap cleanup SIGTERM SIGINT
-tail -f /dev/null
