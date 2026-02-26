@@ -137,7 +137,7 @@ jobs:
               --query instanceView.state \
               --output tsv 2>/dev/null || echo "NotFound")
             echo "Current state: $STATE"
-            if [[ "$STATE" == "Terminated" || "$STATE" == "Stopped" || "$STATE" == "NotFound" ]]; then
+            if [[ "$STATE" == "Terminated" || "$STATE" == "Stopped" || "$STATE" == "NotFound" || "$STATE" == "Succeeded" ]]; then
               echo "Container finished."
               break
             fi
