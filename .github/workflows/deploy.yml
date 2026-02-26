@@ -1,0 +1,132 @@
+name: Build and Deploy to ACI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # allows manual trigger from GitHub UI
+  schedule:
+    - cron: "0 */6 * * *"
+
+env:
+  IMAGE_NAME: refresh-session-playwright
+  ACI_NAME: playwright-novnc
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Ensure resource group exists
+        run: |
+          az group create \
+            --name "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --location "${{ vars.AZURE_LOCATION }}" \
+            --output none
+
+      - name: Delete existing container if present
+        run: |
+          az container delete \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ env.ACI_NAME }}" \
+            --yes \
+            --output none 2>/dev/null || true
+
+      - name: Deploy to Azure Container Instances
+        id: deploy
+        run: |
+          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest"
+
+          az container create \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ env.ACI_NAME }}" \
+            --image "$IMAGE" \
+            --ports 6080 \
+            --cpu 1 \
+            --memory 2 \
+            --ip-address Public \
+            --secure-environment-variables \
+              "VNC_PASSWORD=${{ secrets.VNC_PASSWORD }}" \
+              "FACEBOOK_EMAIL=${{ secrets.FACEBOOK_EMAIL }}" \
+              "FACEBOOK_PASSWORD=${{ secrets.FACEBOOK_PASSWORD }}" \
+            --registry-login-server "index.docker.io" \
+            --registry-username "${{ secrets.DOCKERHUB_USERNAME }}" \
+            --registry-password "${{ secrets.DOCKERHUB_TOKEN }}" \
+            --restart-policy Never \
+            --output none
+
+          ACI_IP=$(az container show \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ env.ACI_NAME }}" \
+            --query ipAddress.ip \
+            --output tsv)
+
+          echo "aci_ip=${ACI_IP}" >> $GITHUB_OUTPUT
+
+      - name: Print connection info
+        run: |
+          echo "========================================="
+          echo "  Deployment complete!"
+          echo "  noVNC URL: http://${{ steps.deploy.outputs.aci_ip }}:6080"
+          echo "  Use your VNC_PASSWORD to log in."
+          echo "========================================="
+
+      - name: Wait for container to finish
+        run: |
+          az container wait \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ env.ACI_NAME }}" \
+            --custom "instanceView.state=='Terminated'" \
+            --interval 30 \
+            --timeout 7200
+
+      - name: Delete container
+        if: always()
+        run: |
+          az container delete \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ env.ACI_NAME }}" \
+            --yes \
+            --output none
