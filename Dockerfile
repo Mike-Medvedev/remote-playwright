@@ -1,4 +1,3 @@
-# Playwright + noVNC on Ubuntu: virtual display, VNC, and browser automation
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -15,7 +14,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
     python3 \
-    python3-numpy \
     xvfb \
     x11vnc \
     x11-utils \
@@ -37,8 +35,8 @@ RUN git clone --depth 1 https://github.com/novnc/noVNC.git /opt/novnc \
 WORKDIR /app
 
 # Copy package files and install dependencies
-COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev
+COPY package.json ./
+RUN npm install
 
 # Install Playwright Chromium and its system dependencies
 RUN npx playwright install --with-deps chromium
