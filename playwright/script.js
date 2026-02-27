@@ -4,14 +4,35 @@ const email = process.env.FACEBOOK_EMAIL ?? "";
 const password = process.env.FACEBOOK_PASSWORD ?? "";
 const webhookUrl = process.env.WEBHOOK_URL ?? "";
 
-function isUsableRequest(request) {
+/**
+ * The "Filter": Ensures we only capture Michael's actual Marketplace search.
+ */
+function isUsableRequest(request, body) {
   if (!request.url().includes("facebook.com/api/graphql")) return false;
-  if (request.method() !== "POST") return false;
 
-  const body = request.postData() ?? "";
-  if (!body.trim()) return false;
+  // 1. Identity Check (Michael)
+  const isMichael = body.includes("__user=100001693381379");
+  const hasAuthToken = body.includes("fb_dtsg=");
 
-  return true;
+  if (!isMichael || !hasAuthToken) return false;
+
+  // 2. Intent Check (Marketplace Search)
+  const isMarketplaceSearch =
+    body.includes("CometMarketplaceSearchContentContainerQuery") ||
+    body.includes("MarketplaceSearchFeedPaginationQuery");
+
+  if (isMarketplaceSearch) {
+    console.log("🎯 TARGET CAPTURED: Marketplace Search Request Found!");
+    return true;
+  }
+
+  // Log what we are skipping so you know it's alive
+  const friendlyName =
+    request.headers()["x-fb-friendly-name"] || "Unknown Query";
+  console.log(
+    `⏳ Auth detected, but ignoring non-marketplace query: ${friendlyName}`,
+  );
+  return false;
 }
 
 async function main() {
@@ -20,92 +41,79 @@ async function main() {
     args: ["--no-sandbox", "--disable-setuid-sandbox"],
   });
 
-  const context = await browser.newContext();
+  const context = await browser.newContext({
+    userAgent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  });
+
   const page = await context.newPage();
 
   try {
     const sessionPromise = new Promise((resolve) => {
       const handler = async (request) => {
-        if (!isUsableRequest(request)) return;
+        if (request.method() !== "POST") return;
 
+        const body = request.postData() ?? "";
+
+        // --- CALLING THE FUNCTION HERE ---
+        if (!isUsableRequest(request, body)) return;
+
+        // If we reach here, isUsableRequest returned true
         const cookies = await context.cookies("https://www.facebook.com");
-        if (!cookies.length) return;
-
         const cookieHeader = cookies
           .map((c) => `${c.name}=${c.value}`)
           .join("; ");
-        page.off("request", handler);
 
+        page.off("request", handler);
         resolve({
           headers: { ...request.headers(), cookie: cookieHeader },
-          body: request.postData(),
+          body: body,
         });
       };
       page.on("request", handler);
     });
 
-    await page.goto("https://www.facebook.com/login/", {
-      waitUntil: "domcontentloaded",
-    });
+    console.log("[script] Navigating to Facebook...");
+    await page.goto("https://www.facebook.com/", { waitUntil: "networkidle" });
 
     if (email && password) {
-      await page.locator('input[name="email"]').waitFor({ state: "visible" });
-      await page.locator('input[name="email"]').fill(email);
-      await page.locator('input[name="pass"]').fill(password);
-      await page.waitForTimeout(1500);
-
-      const loginBtn = page.getByRole("button", { name: /log in/i });
+      console.log("[script] Filling credentials...");
+      await page.fill('input[name="email"]', email);
+      await page.fill('input[name="pass"]', password);
       try {
-        await loginBtn.waitFor({ state: "visible", timeout: 8_000 });
-        await loginBtn.scrollIntoViewIfNeeded();
-        console.log("[script] Clicking login button...");
-        await loginBtn.click();
-      } catch {
-        console.log("[script] No visible button; submitting form via JS");
         await page
-          .locator('input[name="email"]')
-          .evaluate((el) => el.form?.submit());
+          .locator('button[name="login"], button[type="submit"]')
+          .first()
+          .click({ timeout: 5000 });
+      } catch (e) {
+        await page.keyboard.press("Enter");
       }
     }
 
-    // Wait for session — handles both instant capture and post-CAPTCHA/2FA capture.
-    // The browser stays open so the user can complete any verification manually.
-    console.log(
-      "[script] Waiting for session capture (complete any CAPTCHA/2FA if prompted)...",
-    );
+    console.log("\n--- INSTRUCTIONS ---");
+    console.log("1. Finish 2FA.");
+    console.log("2. CLICK ON MARKETPLACE AND SEARCH FOR SOMETHING.");
+    console.log("--------------------\n");
+
     const sessionData = await Promise.race([
       sessionPromise,
       new Promise((_, reject) =>
-        setTimeout(
-          () => reject(new Error("Capture timeout after 10 minutes")),
-          10 * 60 * 1_000,
-        ),
+        setTimeout(() => reject(new Error("Capture Timeout")), 300000),
       ),
     ]);
 
-    console.log("[script] Session captured! Sending to webhook...");
-    const response = await fetch(webhookUrl, {
+    console.log("[script] Sending to webhook...");
+    await fetch(webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        headers: sessionData.headers,
-        body: sessionData.body,
-        capturedAt: new Date().toISOString(),
-      }),
+      body: JSON.stringify(sessionData),
     });
-
-    const responseText = await response.text();
-    console.log(`[script] Webhook response ${response.status}:`, responseText);
-
-    if (!response.ok) {
-      throw new Error(`Webhook returned ${response.status}: ${responseText}`);
-    }
 
     console.log("[script] Done!");
   } catch (err) {
-    console.error("[script]", err);
-    process.exit(1);
+    console.error("\n❌ [ERROR]", err.message);
   } finally {
+    await new Promise((r) => setTimeout(r, 2000));
     await browser.close();
   }
 }
