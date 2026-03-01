@@ -3,9 +3,9 @@ name: Build and Deploy to ACI
 on:
   push:
     branches: [main]
-  workflow_dispatch: # allows manual trigger from GitHub UI
-  schedule:
-    - cron: "0 */6 * * *"
+  # workflow_dispatch: # allows manual trigger from GitHub UI
+  # schedule:
+  #   - cron: "0 */6 * * *"
 
 env:
   IMAGE_NAME: refresh-session-playwright
