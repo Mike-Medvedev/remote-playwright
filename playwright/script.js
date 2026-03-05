@@ -77,7 +77,9 @@ async function waitForLogin(page) {
 
 async function notifyNeedsLogin(novncUrl) {
   const endpoint = `${WEBHOOK_URL}/webhook/needs-login`;
-  console.log(`[script] Notifying backend: human login required -> ${endpoint}`);
+  console.log(
+    `[script] Notifying backend: human login required -> ${endpoint}`,
+  );
   try {
     const res = await fetch(endpoint, {
       method: "POST",
@@ -160,7 +162,10 @@ async function main() {
 
   // Launch the browser once headless to grab its real version, then use that
   // to build a clean Linux UA string (Playwright's default can leak "HeadlessChrome")
-  const probe = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
+  const probe = await chromium.launch({
+    headless: true,
+    args: ["--no-sandbox"],
+  });
   const probeUA = await probe.newPage().then(async (p) => {
     const ua = await p.evaluate(() => navigator.userAgent);
     await p.close();
@@ -178,6 +183,7 @@ async function main() {
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-blink-features=AutomationControlled",
+      "--no-process-singleton-dialog",
     ],
     userAgent,
     viewport: { width: 1920, height: 1080 },
@@ -223,7 +229,9 @@ async function main() {
     }
 
     // Step 4: Capture authenticated session
-    console.log("[script] Setting up request interceptor for session capture...");
+    console.log(
+      "[script] Setting up request interceptor for session capture...",
+    );
     const sessionPromise = captureSession(page, context);
 
     // Trigger marketplace activity to generate a GraphQL request
