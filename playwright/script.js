@@ -89,8 +89,15 @@ async function notifyNeedsLogin(novncUrl) {
       body: JSON.stringify({ novncUrl }),
     });
     console.log(`[script] needs-login webhook response: ${res.status}`);
+    if (!res.ok) {
+      console.error(
+        `[script] needs-login webhook failed (${res.status}): ${res.statusText}`,
+      );
+      process.exit(1);
+    }
   } catch (err) {
     console.error(`[script] Failed to notify needs-login: ${err.message}`);
+    process.exit(1);
   }
 }
 
