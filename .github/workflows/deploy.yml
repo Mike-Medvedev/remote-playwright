@@ -1,4 +1,4 @@
-name: Build Playwright Image
+name: Build Playwright Scrape Image
 
 on:
   push:
