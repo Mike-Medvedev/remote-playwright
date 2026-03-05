@@ -7,6 +7,9 @@ const PERSISTENT_PROFILE_DIR = "/data/browser-profile";
 const LOCAL_PROFILE_DIR = "/tmp/browser-profile";
 const LOGIN_POLL_INTERVAL_MS = 3000;
 const SESSION_CAPTURE_TIMEOUT_MS = 300_000;
+// Total max runtime for the script (default 10 min); set TOTAL_SCRIPT_TIMEOUT_MS env to override
+const TOTAL_SCRIPT_TIMEOUT_MS =
+  Number(process.env.TOTAL_SCRIPT_TIMEOUT_MS) || 10 * 60 * 1000;
 
 if (!WEBHOOK_URL) {
   console.error("ERROR: WEBHOOK_URL environment variable is required.");
@@ -167,21 +170,37 @@ async function postSession(sessionData) {
 
 function copyProfileToLocal() {
   if (fs.existsSync(PERSISTENT_PROFILE_DIR)) {
-    console.log(`[script] Copying profile from ${PERSISTENT_PROFILE_DIR} -> ${LOCAL_PROFILE_DIR}`);
+    console.log(
+      `[script] Copying profile from ${PERSISTENT_PROFILE_DIR} -> ${LOCAL_PROFILE_DIR}`,
+    );
     fs.cpSync(PERSISTENT_PROFILE_DIR, LOCAL_PROFILE_DIR, { recursive: true });
   } else {
-    console.log(`[script] No existing profile found, creating fresh local profile.`);
+    console.log(
+      `[script] No existing profile found, creating fresh local profile.`,
+    );
     fs.mkdirSync(LOCAL_PROFILE_DIR, { recursive: true });
   }
 }
 
 function copyProfileBack() {
-  console.log(`[script] Persisting profile from ${LOCAL_PROFILE_DIR} -> ${PERSISTENT_PROFILE_DIR}`);
+  console.log(
+    `[script] Persisting profile from ${LOCAL_PROFILE_DIR} -> ${PERSISTENT_PROFILE_DIR}`,
+  );
   fs.mkdirSync(PERSISTENT_PROFILE_DIR, { recursive: true });
   fs.cpSync(LOCAL_PROFILE_DIR, PERSISTENT_PROFILE_DIR, { recursive: true });
 }
 
 async function main() {
+  const totalTimeout = setTimeout(() => {
+    console.error(
+      `[script] Total script timeout reached (${TOTAL_SCRIPT_TIMEOUT_MS / 1000}s). Exiting.`,
+    );
+    process.exit(1);
+  }, TOTAL_SCRIPT_TIMEOUT_MS);
+  console.log(
+    `[script] Total script timeout set to ${TOTAL_SCRIPT_TIMEOUT_MS / 1000}s`,
+  );
+
   copyProfileToLocal();
 
   console.log("[script] Launching browser with persistent context...");
@@ -275,6 +294,7 @@ async function main() {
     console.error(`[script] ERROR: ${err.message}`);
     process.exit(1);
   } finally {
+    clearTimeout(totalTimeout);
     await context.close();
     copyProfileBack();
   }
