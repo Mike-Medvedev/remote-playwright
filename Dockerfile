@@ -42,7 +42,8 @@ COPY package.json ./
 RUN npm install
 
 # Install Playwright Chromium and its system dependencies
-RUN npx playwright install --with-deps chromium
+RUN rm -f /etc/apt/sources.list.d/nodesource.list \
+    && npx playwright install --with-deps chromium
 
 # Copy app and entrypoint
 COPY playwright ./playwright
