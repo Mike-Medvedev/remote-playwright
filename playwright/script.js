@@ -183,7 +183,6 @@ async function main() {
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-blink-features=AutomationControlled",
-      "--no-process-singleton-dialog",
     ],
     userAgent,
     viewport: { width: 1920, height: 1080 },
