@@ -1,120 +1,249 @@
 import { chromium } from "playwright";
 
-const email = process.env.FACEBOOK_EMAIL ?? "";
-const password = process.env.FACEBOOK_PASSWORD ?? "";
-const webhookUrl = process.env.WEBHOOK_URL ?? "";
+const WEBHOOK_URL = process.env.WEBHOOK_URL ?? "";
+const NOVNC_PORT = process.env.NOVNC_PORT ?? "6080";
+const BROWSER_PROFILE_DIR = "/data/browser-profile";
+const LOGIN_POLL_INTERVAL_MS = 3000;
+const SESSION_CAPTURE_TIMEOUT_MS = 300_000;
 
-/**
- * The "Filter": Ensures we only capture Michael's actual Marketplace search.
- */
-function isUsableRequest(request, body) {
-  if (!request.url().includes("facebook.com/api/graphql")) return false;
+if (!WEBHOOK_URL) {
+  console.error("ERROR: WEBHOOK_URL environment variable is required.");
+  process.exit(1);
+}
 
-  // 1. Identity Check (Michael)
-  const isMichael = body.includes("__user=100001693381379");
-  const hasAuthToken = body.includes("fb_dtsg=");
-
-  if (!isMichael || !hasAuthToken) return false;
-
-  // 2. Intent Check (Marketplace Search)
-  const isMarketplaceSearch =
-    body.includes("CometMarketplaceSearchContentContainerQuery") ||
-    body.includes("MarketplaceSearchFeedPaginationQuery");
-
-  if (isMarketplaceSearch) {
-    console.log("🎯 TARGET CAPTURED: Marketplace Search Request Found!");
-    return true;
+async function getPublicIp() {
+  try {
+    const res = await fetch(
+      "http://169.254.169.254/metadata/instance?api-version=2021-02-01",
+      { headers: { Metadata: "true" } },
+    );
+    const data = await res.json();
+    return data.network.interface[0].ipv4.ipAddress[0].publicIpAddress;
+  } catch {
+    return process.env.CONTAINER_IP ?? "localhost";
   }
+}
 
-  // Log what we are skipping so you know it's alive
-  const friendlyName =
-    request.headers()["x-fb-friendly-name"] || "Unknown Query";
-  console.log(
-    `⏳ Auth detected, but ignoring non-marketplace query: ${friendlyName}`,
-  );
-  return false;
+function isAuthenticatedGraphQL(request, body) {
+  if (!request.url().includes("facebook.com/api/graphql")) return false;
+  if (request.method() !== "POST") return false;
+  if (!body.includes("fb_dtsg=")) return false;
+  return true;
+}
+
+async function isLoggedIn(page) {
+  const url = page.url();
+  if (url.includes("/login") || url.includes("/checkpoint")) return false;
+
+  const loginForm = await page
+    .locator('form[action*="/login"], #login_form, input[name="email"]')
+    .first()
+    .isVisible()
+    .catch(() => false);
+  if (loginForm) return false;
+
+  const hasMarketplaceContent = await page
+    .locator(
+      '[aria-label="Marketplace"], [data-pagelet="Marketplace"], a[href*="/marketplace"]',
+    )
+    .first()
+    .isVisible({ timeout: 5000 })
+    .catch(() => false);
+
+  return hasMarketplaceContent;
+}
+
+async function waitForLogin(page) {
+  console.log("[script] Waiting for human to complete login...");
+  while (true) {
+    await new Promise((r) => setTimeout(r, LOGIN_POLL_INTERVAL_MS));
+
+    const url = page.url();
+    if (
+      url.includes("/login") ||
+      url.includes("/checkpoint") ||
+      url.includes("/recover")
+    ) {
+      continue;
+    }
+
+    const loggedIn = await isLoggedIn(page);
+    if (loggedIn) {
+      console.log("[script] Login detected!");
+      return;
+    }
+  }
+}
+
+async function notifyNeedsLogin(novncUrl) {
+  const endpoint = `${WEBHOOK_URL}/webhook/needs-login`;
+  console.log(`[script] Notifying backend: human login required -> ${endpoint}`);
+  try {
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ novncUrl }),
+    });
+    console.log(`[script] needs-login webhook response: ${res.status}`);
+  } catch (err) {
+    console.error(`[script] Failed to notify needs-login: ${err.message}`);
+  }
+}
+
+async function captureSession(page, context) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error("Session capture timed out")),
+      SESSION_CAPTURE_TIMEOUT_MS,
+    );
+
+    const handler = async (request) => {
+      const body = request.postData() ?? "";
+      if (!isAuthenticatedGraphQL(request, body)) return;
+
+      const reqHeaders = request.headers();
+      const friendlyName = reqHeaders["x-fb-friendly-name"] || "unknown";
+
+      // Resolve cookie: use request header if present, otherwise pull from
+      // the browser context (persistent profile stores them even when the
+      // browser doesn't attach them to every request)
+      let cookieHeader = reqHeaders["cookie"] ?? "";
+      if (!cookieHeader) {
+        const cookies = await context.cookies("https://www.facebook.com");
+        cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+      }
+
+      if (!cookieHeader) {
+        console.log(
+          `[script] GraphQL request has no cookie anywhere, skipping: ${friendlyName}`,
+        );
+        return;
+      }
+
+      clearTimeout(timeout);
+      page.off("request", handler);
+
+      console.log(`[script] Captured authenticated GraphQL: ${friendlyName}`);
+      console.log(
+        `[script] Cookie source: ${reqHeaders["cookie"] ? "request header" : "browser context"}`,
+      );
+
+      resolve({
+        headers: { ...reqHeaders, cookie: cookieHeader },
+        body,
+        capturedAt: new Date().toISOString(),
+      });
+    };
+
+    page.on("request", handler);
+  });
+}
+
+async function postSession(sessionData) {
+  const endpoint = `${WEBHOOK_URL}/webhook/refresh`;
+  console.log(`[script] Posting captured session -> ${endpoint}`);
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(sessionData),
+  });
+  console.log(`[script] refresh webhook response: ${res.status}`);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Backend returned ${res.status}: ${text}`);
+  }
 }
 
 async function main() {
-  const browser = await chromium.launch({
+  console.log("[script] Launching browser with persistent context...");
+  console.log(`[script] Profile directory: ${BROWSER_PROFILE_DIR}`);
+
+  // Launch the browser once headless to grab its real version, then use that
+  // to build a clean Linux UA string (Playwright's default can leak "HeadlessChrome")
+  const probe = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
+  const probeUA = await probe.newPage().then(async (p) => {
+    const ua = await p.evaluate(() => navigator.userAgent);
+    await p.close();
+    return ua;
+  });
+  await probe.close();
+
+  const chromeVersion = probeUA.match(/Chrome\/([\d.]+)/)?.[1] ?? "130.0.0.0";
+  const userAgent = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`;
+  console.log(`[script] Using user-agent: ${userAgent}`);
+
+  const context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
     headless: false,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-blink-features=AutomationControlled",
+    ],
+    userAgent,
+    viewport: { width: 1920, height: 1080 },
+    locale: "en-US",
+    timezoneId: "America/New_York",
+    ignoreHTTPSErrors: true,
   });
 
-  const context = await browser.newContext({
-    userAgent:
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  });
-
-  const page = await context.newPage();
+  const page = context.pages()[0] || (await context.newPage());
 
   try {
-    const sessionPromise = new Promise((resolve) => {
-      const handler = async (request) => {
-        if (request.method() !== "POST") return;
-
-        const body = request.postData() ?? "";
-
-        // --- CALLING THE FUNCTION HERE ---
-        if (!isUsableRequest(request, body)) return;
-
-        // If we reach here, isUsableRequest returned true
-        const cookies = await context.cookies("https://www.facebook.com");
-        const cookieHeader = cookies
-          .map((c) => `${c.name}=${c.value}`)
-          .join("; ");
-
-        page.off("request", handler);
-        resolve({
-          headers: { ...request.headers(), cookie: cookieHeader },
-          body: body,
-        });
-      };
-      page.on("request", handler);
+    // Step 1: Navigate to marketplace
+    console.log("[script] Navigating to Facebook Marketplace...");
+    await page.goto("https://www.facebook.com/marketplace/", {
+      waitUntil: "domcontentloaded",
+      timeout: 60_000,
     });
 
-    console.log("[script] Navigating to Facebook...");
-    await page.goto("https://www.facebook.com/", { waitUntil: "networkidle" });
+    // Give the page a moment to settle (redirects, JS hydration)
+    await page.waitForTimeout(5000);
 
-    if (email && password) {
-      console.log("[script] Filling credentials...");
-      await page.fill('input[name="email"]', email);
-      await page.fill('input[name="pass"]', password);
-      try {
-        await page
-          .locator('button[name="login"], button[type="submit"]')
-          .first()
-          .click({ timeout: 5000 });
-      } catch (e) {
-        await page.keyboard.press("Enter");
-      }
+    // Step 2: Check login state
+    const loggedIn = await isLoggedIn(page);
+
+    if (!loggedIn) {
+      // Step 3: Signal backend that human login is needed
+      const publicIp = await getPublicIp();
+      const novncUrl = `http://${publicIp}:${NOVNC_PORT}`;
+      await notifyNeedsLogin(novncUrl);
+
+      // Wait for human to log in via noVNC
+      await waitForLogin(page);
+
+      // After login, navigate to marketplace
+      console.log("[script] Navigating to Marketplace after login...");
+      await page.goto("https://www.facebook.com/marketplace/", {
+        waitUntil: "domcontentloaded",
+        timeout: 60_000,
+      });
+      await page.waitForTimeout(3000);
+    } else {
+      console.log("[script] Already logged in, proceeding to capture.");
     }
 
-    console.log("\n--- INSTRUCTIONS ---");
-    console.log("1. Finish 2FA.");
-    console.log("2. CLICK ON MARKETPLACE AND SEARCH FOR SOMETHING.");
-    console.log("--------------------\n");
+    // Step 4: Capture authenticated session
+    console.log("[script] Setting up request interceptor for session capture...");
+    const sessionPromise = captureSession(page, context);
 
-    const sessionData = await Promise.race([
-      sessionPromise,
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Capture Timeout")), 300000),
-      ),
-    ]);
-
-    console.log("[script] Sending to webhook...");
-    await fetch(webhookUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(sessionData),
+    // Trigger marketplace activity to generate a GraphQL request
+    console.log("[script] Triggering marketplace activity...");
+    await page.goto("https://www.facebook.com/marketplace/", {
+      waitUntil: "domcontentloaded",
+      timeout: 60_000,
     });
 
-    console.log("[script] Done!");
+    const sessionData = await sessionPromise;
+    console.log("[script] Session captured successfully.");
+
+    // Step 5: POST session to backend
+    await postSession(sessionData);
+    console.log("[script] Done! Container exiting cleanly.");
   } catch (err) {
-    console.error("\n❌ [ERROR]", err.message);
+    console.error(`[script] ERROR: ${err.message}`);
+    process.exit(1);
   } finally {
-    await new Promise((r) => setTimeout(r, 2000));
-    await browser.close();
+    await context.close();
   }
 }
 

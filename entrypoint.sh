@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# --- Validate required env vars up front ---
-if [ -z "${VNC_PASSWORD:-}" ]; then
-    echo "ERROR: VNC_PASSWORD environment variable is not set. Refusing to start."
-    exit 1
-fi
-
 echo "[entrypoint] Starting up..."
 
 # --- Clean up any stale X lock files from previous runs ---
@@ -22,7 +16,7 @@ Xvfb "${DISPLAY}" \
     &
 XVFB_PID=$!
 
-# --- Wait for Xvfb to be genuinely ready (no sleep guessing) ---
+# --- Wait for Xvfb to be genuinely ready ---
 echo "[entrypoint] Waiting for Xvfb to be ready..."
 for i in $(seq 1 15); do
     if xdpyinfo -display "${DISPLAY}" >/dev/null 2>&1; then
@@ -36,17 +30,14 @@ for i in $(seq 1 15); do
     sleep 1
 done
 
-# --- 2. Store VNC password and start x11vnc ---
-x11vnc -storepasswd "${VNC_PASSWORD}" /tmp/vncpasswd
-chmod 600 /tmp/vncpasswd
-
-echo "[entrypoint] Starting x11vnc on port ${VNC_PORT}"
+# --- 2. Start x11vnc (no password) ---
+echo "[entrypoint] Starting x11vnc on port ${VNC_PORT} (no password)"
 x11vnc \
     -display "${DISPLAY}" \
-    -rfbauth /tmp/vncpasswd \
     -rfbport "${VNC_PORT}" \
     -forever \
     -shared \
+    -nopw \
     -noxdamage \
     -noxfixes \
     -quiet \

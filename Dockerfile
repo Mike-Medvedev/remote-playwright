@@ -32,6 +32,9 @@ RUN git clone --depth 1 https://github.com/novnc/noVNC.git /opt/novnc \
     && git clone --depth 1 https://github.com/novnc/websockify.git /opt/novnc/utils/websockify \
     && ln -s /opt/novnc/vnc.html /opt/novnc/index.html
 
+# Create persistent browser profile directory (mounted as Azure File Share volume at runtime)
+RUN mkdir -p /data/browser-profile
+
 WORKDIR /app
 
 # Copy package files and install dependencies
