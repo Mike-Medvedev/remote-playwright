@@ -1,8 +1,10 @@
 import { chromium } from "playwright";
+import fs from "fs";
 
 const WEBHOOK_URL = process.env.WEBHOOK_URL ?? "";
 const NOVNC_PORT = process.env.NOVNC_PORT ?? "6080";
-const BROWSER_PROFILE_DIR = "/data/browser-profile";
+const PERSISTENT_PROFILE_DIR = "/data/browser-profile";
+const LOCAL_PROFILE_DIR = "/tmp/browser-profile";
 const LOGIN_POLL_INTERVAL_MS = 3000;
 const SESSION_CAPTURE_TIMEOUT_MS = 300_000;
 
@@ -156,12 +158,28 @@ async function postSession(sessionData) {
   }
 }
 
-async function main() {
-  console.log("[script] Launching browser with persistent context...");
-  console.log(`[script] Profile directory: ${BROWSER_PROFILE_DIR}`);
+function copyProfileToLocal() {
+  if (fs.existsSync(PERSISTENT_PROFILE_DIR)) {
+    console.log(`[script] Copying profile from ${PERSISTENT_PROFILE_DIR} -> ${LOCAL_PROFILE_DIR}`);
+    fs.cpSync(PERSISTENT_PROFILE_DIR, LOCAL_PROFILE_DIR, { recursive: true });
+  } else {
+    console.log(`[script] No existing profile found, creating fresh local profile.`);
+    fs.mkdirSync(LOCAL_PROFILE_DIR, { recursive: true });
+  }
+}
 
-  // Launch the browser once headless to grab its real version, then use that
-  // to build a clean Linux UA string (Playwright's default can leak "HeadlessChrome")
+function copyProfileBack() {
+  console.log(`[script] Persisting profile from ${LOCAL_PROFILE_DIR} -> ${PERSISTENT_PROFILE_DIR}`);
+  fs.mkdirSync(PERSISTENT_PROFILE_DIR, { recursive: true });
+  fs.cpSync(LOCAL_PROFILE_DIR, PERSISTENT_PROFILE_DIR, { recursive: true });
+}
+
+async function main() {
+  copyProfileToLocal();
+
+  console.log("[script] Launching browser with persistent context...");
+  console.log(`[script] Profile directory: ${LOCAL_PROFILE_DIR}`);
+
   const probe = await chromium.launch({
     headless: true,
     args: ["--no-sandbox"],
@@ -177,7 +195,7 @@ async function main() {
   const userAgent = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`;
   console.log(`[script] Using user-agent: ${userAgent}`);
 
-  const context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
+  const context = await chromium.launchPersistentContext(LOCAL_PROFILE_DIR, {
     headless: false,
     args: [
       "--no-sandbox",
@@ -251,6 +269,7 @@ async function main() {
     process.exit(1);
   } finally {
     await context.close();
+    copyProfileBack();
   }
 }
 
