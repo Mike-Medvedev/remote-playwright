@@ -3,14 +3,27 @@ import fs from "fs";
 
 const WEBHOOK_URL = process.env.WEBHOOK_URL ?? "";
 const NOVNC_PORT = process.env.NOVNC_PORT ?? "6080";
-const PERSISTENT_PROFILE_DIR = "/data/browser-profile";
-const LOCAL_PROFILE_DIR = "/tmp/browser-profile";
 const LOGIN_POLL_INTERVAL_MS = 3000;
 const SESSION_CAPTURE_TIMEOUT_MS = 300_000;
 
 if (!WEBHOOK_URL) {
   console.error("ERROR: WEBHOOK_URL environment variable is required.");
   process.exit(1);
+}
+
+async function getSyncContext() {
+  const endpoint = `${WEBHOOK_URL}/webhook/sync-context`;
+  console.log(`[script] Fetching sync context from ${endpoint}`);
+  const res = await fetch(endpoint);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch sync context: ${res.status}`);
+  }
+  const data = await res.json();
+  if (!data.userId) {
+    throw new Error("sync-context response missing userId");
+  }
+  console.log(`[script] Sync context received. userId: ${data.userId}`);
+  return data.userId;
 }
 
 async function getPublicIp() {
@@ -77,7 +90,7 @@ async function waitForLogin(page) {
   }
 }
 
-async function notifyNeedsLogin(novncUrl) {
+async function notifyNeedsLogin(novncUrl, userId) {
   const endpoint = `${WEBHOOK_URL}/webhook/needs-login`;
   console.log(
     `[script] Notifying backend: human login required -> ${endpoint}`,
@@ -86,7 +99,7 @@ async function notifyNeedsLogin(novncUrl) {
     const res = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ novncUrl }),
+      body: JSON.stringify({ novncUrl, userId }),
     });
     console.log(`[script] needs-login webhook response: ${res.status}`);
   } catch (err) {
@@ -143,13 +156,13 @@ async function captureSession(page, context) {
   });
 }
 
-async function postSession(sessionData) {
+async function postSession(sessionData, userId) {
   const endpoint = `${WEBHOOK_URL}/webhook/refresh`;
   console.log(`[script] Posting captured session -> ${endpoint}`);
   const res = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(sessionData),
+    body: JSON.stringify({ ...sessionData, userId }),
   });
   console.log(`[script] refresh webhook response: ${res.status}`);
   if (!res.ok) {
@@ -158,27 +171,31 @@ async function postSession(sessionData) {
   }
 }
 
-function copyProfileToLocal() {
-  if (fs.existsSync(PERSISTENT_PROFILE_DIR)) {
-    console.log(`[script] Copying profile from ${PERSISTENT_PROFILE_DIR} -> ${LOCAL_PROFILE_DIR}`);
-    fs.cpSync(PERSISTENT_PROFILE_DIR, LOCAL_PROFILE_DIR, { recursive: true });
+function copyProfileToLocal(persistentDir, localDir) {
+  if (fs.existsSync(persistentDir)) {
+    console.log(`[script] Copying profile from ${persistentDir} -> ${localDir}`);
+    fs.cpSync(persistentDir, localDir, { recursive: true });
   } else {
     console.log(`[script] No existing profile found, creating fresh local profile.`);
-    fs.mkdirSync(LOCAL_PROFILE_DIR, { recursive: true });
+    fs.mkdirSync(localDir, { recursive: true });
   }
 }
 
-function copyProfileBack() {
-  console.log(`[script] Persisting profile from ${LOCAL_PROFILE_DIR} -> ${PERSISTENT_PROFILE_DIR}`);
-  fs.mkdirSync(PERSISTENT_PROFILE_DIR, { recursive: true });
-  fs.cpSync(LOCAL_PROFILE_DIR, PERSISTENT_PROFILE_DIR, { recursive: true });
+function copyProfileBack(localDir, persistentDir) {
+  console.log(`[script] Persisting profile from ${localDir} -> ${persistentDir}`);
+  fs.mkdirSync(persistentDir, { recursive: true });
+  fs.cpSync(localDir, persistentDir, { recursive: true });
 }
 
 async function main() {
-  copyProfileToLocal();
+  const userId = await getSyncContext();
+  const persistentDir = `/data/browser-profiles/${userId}`;
+  const localDir = `/tmp/browser-profile-${userId}`;
+
+  copyProfileToLocal(persistentDir, localDir);
 
   console.log("[script] Launching browser with persistent context...");
-  console.log(`[script] Profile directory: ${LOCAL_PROFILE_DIR}`);
+  console.log(`[script] Profile directory: ${localDir} (userId: ${userId})`);
 
   const probe = await chromium.launch({
     headless: true,
@@ -195,7 +212,7 @@ async function main() {
   const userAgent = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`;
   console.log(`[script] Using user-agent: ${userAgent}`);
 
-  const context = await chromium.launchPersistentContext(LOCAL_PROFILE_DIR, {
+  const context = await chromium.launchPersistentContext(localDir, {
     headless: false,
     args: [
       "--no-sandbox",
@@ -229,7 +246,7 @@ async function main() {
       // Step 3: Signal backend that human login is needed
       const publicIp = await getPublicIp();
       const novncUrl = `http://${publicIp}:${NOVNC_PORT}`;
-      await notifyNeedsLogin(novncUrl);
+      await notifyNeedsLogin(novncUrl, userId);
 
       // Wait for human to log in via noVNC
       await waitForLogin(page);
@@ -262,14 +279,14 @@ async function main() {
     console.log("[script] Session captured successfully.");
 
     // Step 5: POST session to backend
-    await postSession(sessionData);
+    await postSession(sessionData, userId);
     console.log("[script] Done! Container exiting cleanly.");
   } catch (err) {
     console.error(`[script] ERROR: ${err.message}`);
     process.exit(1);
   } finally {
     await context.close();
-    copyProfileBack();
+    copyProfileBack(localDir, persistentDir);
   }
 }
 
