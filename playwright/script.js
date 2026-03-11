@@ -5,6 +5,9 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL ?? "";
 const NOVNC_PORT = process.env.NOVNC_PORT ?? "6080";
 const LOGIN_POLL_INTERVAL_MS = 3000;
 const SESSION_CAPTURE_TIMEOUT_MS = 300_000;
+// Total max runtime for the script (default 10 min); set TOTAL_SCRIPT_TIMEOUT_MS env to override
+const TOTAL_SCRIPT_TIMEOUT_MS =
+  Number(process.env.TOTAL_SCRIPT_TIMEOUT_MS) || 10 * 60 * 1000;
 
 if (!WEBHOOK_URL) {
   console.error("ERROR: WEBHOOK_URL environment variable is required.");
@@ -102,8 +105,15 @@ async function notifyNeedsLogin(novncUrl, userId) {
       body: JSON.stringify({ novncUrl, userId }),
     });
     console.log(`[script] needs-login webhook response: ${res.status}`);
+    if (!res.ok) {
+      console.error(
+        `[script] needs-login webhook failed (${res.status}): ${res.statusText}`,
+      );
+      process.exit(1);
+    }
   } catch (err) {
     console.error(`[script] Failed to notify needs-login: ${err.message}`);
+    process.exit(1);
   }
 }
 
@@ -285,6 +295,7 @@ async function main() {
     console.error(`[script] ERROR: ${err.message}`);
     process.exit(1);
   } finally {
+    clearTimeout(totalTimeout);
     await context.close();
     copyProfileBack(localDir, persistentDir);
   }
