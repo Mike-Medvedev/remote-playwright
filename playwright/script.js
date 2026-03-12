@@ -21,7 +21,11 @@ async function getSyncContext() {
   if (!res.ok) {
     throw new Error(`Failed to fetch sync context: ${res.status}`);
   }
-  const data = await res.json();
+  const result = await res.json();
+  if(!result.success){
+    throw new Error(data.name, data.message)
+  }
+  const data = result.data
   if (!data.userId) {
     throw new Error("sync-context response missing userId");
   }
