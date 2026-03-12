@@ -300,7 +300,6 @@ async function main() {
     console.error(`[script] ERROR: ${err.message}`);
     exitCode = 1;
   } finally {
-    clearTimeout(totalTimeout);
     await context.close();
     copyProfileBack(localDir, persistentDir);
   }
