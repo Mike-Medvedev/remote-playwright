@@ -48,7 +48,7 @@ RUN rm -f /etc/apt/sources.list.d/nodesource.list \
 # Copy app and entrypoint
 COPY playwright ./playwright
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 
 EXPOSE 6080
 
