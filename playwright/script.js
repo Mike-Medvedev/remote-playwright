@@ -18,15 +18,13 @@ async function getSyncContext() {
   const endpoint = `${WEBHOOK_URL}/webhook/sync-context`;
   console.log(`[script] Fetching sync context from ${endpoint}`);
   const res = await fetch(endpoint);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch sync context: ${res.status}`);
-  }
   const result = await res.json();
-  if (!result.success) {
-    throw new Error(data.name, data.message);
+  if (!res.ok || !result.success) {
+    const msg = result.error?.message ?? result.message ?? `HTTP ${res.status}`;
+    throw new Error(`sync-context failed: ${msg}`);
   }
   const data = result.data;
-  if (!data.userId) {
+  if (!data?.userId) {
     throw new Error("sync-context response missing userId");
   }
   console.log(`[script] Sync context received. userId: ${data.userId}, containerHost: ${data.containerHost}`);
