@@ -22,15 +22,15 @@ async function getSyncContext() {
     throw new Error(`Failed to fetch sync context: ${res.status}`);
   }
   const result = await res.json();
-  if(!result.success){
-    throw new Error(data.name, data.message)
+  if (!result.success) {
+    throw new Error(data.name, data.message);
   }
-  const data = result.data
+  const data = result.data;
   if (!data.userId) {
     throw new Error("sync-context response missing userId");
   }
-  console.log(`[script] Sync context received. userId: ${data.userId}`);
-  return data.userId;
+  console.log(`[script] Sync context received. userId: ${data.userId}, containerIp: ${data.containerIp}`);
+  return { userId: data.userId, containerIp: data.containerIp };
 }
 
 async function getPublicIp() {
@@ -202,7 +202,7 @@ function copyProfileBack(localDir, persistentDir) {
 }
 
 async function main() {
-  const userId = await getSyncContext();
+  const { userId, containerIp } = await getSyncContext();
   const persistentDir = `/data/browser-profiles/${userId}`;
   const localDir = `/tmp/browser-profile-${userId}`;
 
@@ -258,7 +258,7 @@ async function main() {
 
     if (!loggedIn) {
       // Step 3: Signal backend that human login is needed
-      const publicIp = await getPublicIp();
+      const publicIp = containerIp || await getPublicIp(); // fall back to IMDS/env if backend didn't have it
       const novncUrl = `http://${publicIp}:${NOVNC_PORT}`;
       await notifyNeedsLogin(novncUrl, userId);
 
