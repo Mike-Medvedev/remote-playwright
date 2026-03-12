@@ -29,8 +29,8 @@ async function getSyncContext() {
   if (!data.userId) {
     throw new Error("sync-context response missing userId");
   }
-  console.log(`[script] Sync context received. userId: ${data.userId}, containerIp: ${data.containerIp}`);
-  return { userId: data.userId, containerIp: data.containerIp };
+  console.log(`[script] Sync context received. userId: ${data.userId}, containerHost: ${data.containerHost}`);
+  return { userId: data.userId, containerHost: data.containerHost };
 }
 
 async function getPublicIp() {
@@ -202,7 +202,7 @@ function copyProfileBack(localDir, persistentDir) {
 }
 
 async function main() {
-  const { userId, containerIp } = await getSyncContext();
+  const { userId, containerHost } = await getSyncContext();
   const persistentDir = `/data/browser-profiles/${userId}`;
   const localDir = `/tmp/browser-profile-${userId}`;
 
@@ -242,6 +242,7 @@ async function main() {
 
   const page = context.pages()[0] || (await context.newPage());
 
+  let exitCode = 0;
   try {
     // Step 1: Navigate to marketplace
     console.log("[script] Navigating to Facebook Marketplace...");
@@ -258,8 +259,8 @@ async function main() {
 
     if (!loggedIn) {
       // Step 3: Signal backend that human login is needed
-      const publicIp = containerIp || await getPublicIp(); // fall back to IMDS/env if backend didn't have it
-      const novncUrl = `http://${publicIp}:${NOVNC_PORT}`;
+      const host = containerHost || await getPublicIp();
+      const novncUrl = `http://${host}:${NOVNC_PORT}`;
       await notifyNeedsLogin(novncUrl, userId);
 
       // Wait for human to log in via noVNC
@@ -297,12 +298,13 @@ async function main() {
     console.log("[script] Done! Container exiting cleanly.");
   } catch (err) {
     console.error(`[script] ERROR: ${err.message}`);
-    process.exit(1);
+    exitCode = 1;
   } finally {
     clearTimeout(totalTimeout);
     await context.close();
     copyProfileBack(localDir, persistentDir);
   }
+  process.exit(exitCode);
 }
 
 main();
