@@ -260,7 +260,7 @@ async function main() {
     if (!loggedIn) {
       // Step 3: Signal backend that human login is needed
       const host = containerHost || await getPublicIp();
-      const novncUrl = `http://${host}:${NOVNC_PORT}`;
+      const novncUrl = `https://${host}`;
       await notifyNeedsLogin(novncUrl, userId);
 
       // Wait for human to log in via noVNC
