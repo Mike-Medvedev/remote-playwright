@@ -5,9 +5,8 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL ?? "";
 const NOVNC_PORT = process.env.NOVNC_PORT ?? "6080";
 const LOGIN_POLL_INTERVAL_MS = 3000;
 const SESSION_CAPTURE_TIMEOUT_MS = 300_000;
-// Total max runtime for the script (default 10 min); set TOTAL_SCRIPT_TIMEOUT_MS env to override
 const TOTAL_SCRIPT_TIMEOUT_MS =
-  Number(process.env.TOTAL_SCRIPT_TIMEOUT_MS) || 10 * 60 * 1000;
+  Number(process.env.TOTAL_SCRIPT_TIMEOUT_MS) || 20 * 60 * 1000;
 
 if (!WEBHOOK_URL) {
   console.error("ERROR: WEBHOOK_URL environment variable is required.");
@@ -53,7 +52,7 @@ function isAuthenticatedGraphQL(request, body) {
 
 async function isLoggedIn(page) {
   const url = page.url();
-  if (url.includes("/login") || url.includes("/checkpoint")) return false;
+  if (url.includes("/login") || url.includes("/checkpoint") || url.includes("/recover")) return false;
 
   const loginForm = await page
     .locator('form[action*="/login"], #login_form, input[name="email"]')
@@ -62,15 +61,16 @@ async function isLoggedIn(page) {
     .catch(() => false);
   if (loginForm) return false;
 
-  const hasMarketplaceContent = await page
+  const loggedInIndicator = await page
     .locator(
-      '[aria-label="Marketplace"], [data-pagelet="Marketplace"], a[href*="/marketplace"]',
+      '[aria-label="Your profile"], [aria-label="Account"], [data-pagelet="ProfileTail"], ' +
+      'a[href*="/marketplace"], [aria-label="Marketplace"], [role="navigation"]',
     )
     .first()
-    .isVisible({ timeout: 5000 })
+    .isVisible({ timeout: 8000 })
     .catch(() => false);
 
-  return hasMarketplaceContent;
+  return loggedInIndicator;
 }
 
 async function waitForLogin(page) {
@@ -126,6 +126,9 @@ async function captureSession(page, context) {
       SESSION_CAPTURE_TIMEOUT_MS,
     );
 
+    let cookieRetryCount = 0;
+    const MAX_COOKIE_RETRIES = 3;
+
     const handler = async (request) => {
       const body = request.postData() ?? "";
       if (!isAuthenticatedGraphQL(request, body)) return;
@@ -133,9 +136,6 @@ async function captureSession(page, context) {
       const reqHeaders = request.headers();
       const friendlyName = reqHeaders["x-fb-friendly-name"] || "unknown";
 
-      // Resolve cookie: use request header if present, otherwise pull from
-      // the browser context (persistent profile stores them even when the
-      // browser doesn't attach them to every request)
       let cookieHeader = reqHeaders["cookie"] ?? "";
       if (!cookieHeader) {
         const cookies = await context.cookies("https://www.facebook.com");
@@ -143,8 +143,15 @@ async function captureSession(page, context) {
       }
 
       if (!cookieHeader) {
+        cookieRetryCount++;
+        if (cookieRetryCount <= MAX_COOKIE_RETRIES) {
+          console.log(
+            `[script] GraphQL "${friendlyName}" has no cookies yet (attempt ${cookieRetryCount}/${MAX_COOKIE_RETRIES}), waiting for next request...`,
+          );
+          return;
+        }
         console.log(
-          `[script] GraphQL request has no cookie anywhere, skipping: ${friendlyName}`,
+          `[script] GraphQL "${friendlyName}" still has no cookies after ${MAX_COOKIE_RETRIES} attempts, skipping.`,
         );
         return;
       }
@@ -166,6 +173,55 @@ async function captureSession(page, context) {
 
     page.on("request", handler);
   });
+}
+
+async function triggerMarketplaceGraphQL(page) {
+  console.log("[script] Triggering marketplace GraphQL via element interactions...");
+
+  const searchBar = page.locator(
+    'input[aria-label="Search Marketplace"], input[placeholder*="Search Marketplace"], ' +
+    'input[aria-label="Search Facebook"], input[placeholder*="Search Facebook"]',
+  );
+  const searchVisible = await searchBar.first().isVisible({ timeout: 5000 }).catch(() => false);
+  if (searchVisible) {
+    console.log("[script] Focusing search bar to trigger GraphQL...");
+    await searchBar.first().focus().catch(() => {});
+    await page.waitForTimeout(2000);
+    await searchBar.first().click().catch(() => {});
+    await page.waitForTimeout(2000);
+  }
+
+  const categoryLinks = page.locator(
+    'a[href*="/marketplace/categories"], a[href*="/marketplace/vehicles"], ' +
+    'a[href*="/marketplace/property"], [role="listitem"] a[href*="/marketplace"]',
+  );
+  const categoryCount = await categoryLinks.count().catch(() => 0);
+  if (categoryCount > 0) {
+    console.log(`[script] Hovering ${Math.min(categoryCount, 3)} category links...`);
+    for (let i = 0; i < Math.min(categoryCount, 3); i++) {
+      await categoryLinks.nth(i).hover({ force: true }).catch(() => {});
+      await page.waitForTimeout(1500);
+    }
+  }
+
+  const feedItems = page.locator(
+    '[data-pagelet*="Marketplace"] a, [role="article"] a, ' +
+    'a[href*="/marketplace/item/"]',
+  );
+  const feedCount = await feedItems.count().catch(() => 0);
+  if (feedCount > 0) {
+    console.log(`[script] Hovering ${Math.min(feedCount, 3)} feed items...`);
+    for (let i = 0; i < Math.min(feedCount, 3); i++) {
+      await feedItems.nth(i).hover({ force: true }).catch(() => {});
+      await page.waitForTimeout(1500);
+    }
+  }
+
+  console.log("[script] Scrolling page to trigger lazy-loaded GraphQL calls...");
+  await page.evaluate(() => window.scrollBy(0, 600)).catch(() => {});
+  await page.waitForTimeout(2000);
+  await page.evaluate(() => window.scrollBy(0, 600)).catch(() => {});
+  await page.waitForTimeout(2000);
 }
 
 async function postSession(sessionData, userId) {
@@ -200,6 +256,11 @@ function copyProfileBack(localDir, persistentDir) {
 }
 
 async function main() {
+  const globalTimeout = setTimeout(() => {
+    console.error(`[script] FATAL: Global timeout reached (${TOTAL_SCRIPT_TIMEOUT_MS / 1000}s). Exiting.`);
+    process.exit(1);
+  }, TOTAL_SCRIPT_TIMEOUT_MS);
+
   const { userId, containerHost } = await getSyncContext();
   const persistentDir = `/data/browser-profiles/${userId}`;
   const localDir = `/tmp/browser-profile-${userId}`;
@@ -208,6 +269,7 @@ async function main() {
 
   console.log("[script] Launching browser with persistent context...");
   console.log(`[script] Profile directory: ${localDir} (userId: ${userId})`);
+  console.log(`[script] Global timeout: ${TOTAL_SCRIPT_TIMEOUT_MS / 1000}s`);
 
   const probe = await chromium.launch({
     headless: true,
@@ -242,62 +304,54 @@ async function main() {
 
   let exitCode = 0;
   try {
-    // Step 1: Navigate to marketplace
     console.log("[script] Navigating to Facebook Marketplace...");
     await page.goto("https://www.facebook.com/marketplace/", {
       waitUntil: "domcontentloaded",
       timeout: 60_000,
     });
 
-    // Give the page a moment to settle (redirects, JS hydration)
     await page.waitForTimeout(5000);
 
-    // Step 2: Check login state
     const loggedIn = await isLoggedIn(page);
 
     if (!loggedIn) {
-      // Step 3: Signal backend that human login is needed
       const host = containerHost || await getPublicIp();
       const novncUrl = `https://${host}`;
       await notifyNeedsLogin(novncUrl, userId);
 
-      // Wait for human to log in via noVNC
       await waitForLogin(page);
 
-      // After login, navigate to marketplace
-      console.log("[script] Navigating to Marketplace after login...");
-      await page.goto("https://www.facebook.com/marketplace/", {
-        waitUntil: "domcontentloaded",
-        timeout: 60_000,
-      });
-      await page.waitForTimeout(3000);
+      // After login, give the page time to settle and set cookies
+      console.log("[script] Login detected, waiting for session to stabilize...");
+      await page.waitForTimeout(5000);
     } else {
       console.log("[script] Already logged in, proceeding to capture.");
     }
 
-    // Step 4: Capture authenticated session
-    console.log(
-      "[script] Setting up request interceptor for session capture...",
-    );
+    // Navigate to marketplace and set up capture before it loads
+    console.log("[script] Setting up request interceptor for session capture...");
     const sessionPromise = captureSession(page, context);
 
-    // Trigger marketplace activity to generate a GraphQL request
-    console.log("[script] Triggering marketplace activity...");
+    console.log("[script] Navigating to Marketplace for capture...");
     await page.goto("https://www.facebook.com/marketplace/", {
       waitUntil: "domcontentloaded",
       timeout: 60_000,
     });
+    await page.waitForTimeout(3000);
+
+    // Actively trigger GraphQL requests by interacting with page elements
+    await triggerMarketplaceGraphQL(page);
 
     const sessionData = await sessionPromise;
     console.log("[script] Session captured successfully.");
 
-    // Step 5: POST session to backend
     await postSession(sessionData, userId);
     console.log("[script] Done! Container exiting cleanly.");
   } catch (err) {
     console.error(`[script] ERROR: ${err.message}`);
     exitCode = 1;
   } finally {
+    clearTimeout(globalTimeout);
     await context.close();
     copyProfileBack(localDir, persistentDir);
   }
