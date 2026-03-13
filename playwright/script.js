@@ -247,6 +247,22 @@ async function triggerMarketplaceGraphQL(page) {
   console.log("[script] Interaction sequence complete.");
 }
 
+async function postStatusUpdate(message, step, userId) {
+  const endpoint = `${WEBHOOK_URL}/webhook/status-update`;
+  console.log(`[script] Status update (${step}): ${message}`);
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, step, userId }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    console.error(
+      `[script] status-update webhook failed (${res.status}): ${text || res.statusText}`,
+    );
+  }
+}
+
 async function postSession(sessionData, userId) {
   const endpoint = `${WEBHOOK_URL}/webhook/refresh`;
   console.log(`[script] Posting captured session -> ${endpoint}`);
@@ -335,8 +351,11 @@ async function main() {
 
   let exitCode = 0;
   try {
-    // Check if already logged in via saved profile before showing login page
-    console.log("[script] Checking for existing session...");
+    await postStatusUpdate(
+      "Checking for existing session...",
+      "checking_session",
+      userId,
+    );
     await page.goto("https://www.facebook.com/", {
       waitUntil: "domcontentloaded",
       timeout: 60_000,
@@ -346,9 +365,10 @@ async function main() {
     const alreadyLoggedIn = await isLoggedIn(page);
 
     if (!alreadyLoggedIn) {
-      // Explicitly navigate to /login so it reliably shows up on any device
-      console.log(
-        "[script] Not logged in. Navigating to Facebook login page...",
+      await postStatusUpdate(
+        "Login required. Waiting for user to log in...",
+        "awaiting_login",
+        userId,
       );
       await page.goto("https://www.facebook.com/login", {
         waitUntil: "domcontentloaded",
@@ -356,50 +376,60 @@ async function main() {
       });
       await page.waitForTimeout(2000);
 
-      // Notify backend so the user gets the noVNC link
       const host = containerHost || (await getPublicIp());
       const novncUrl = `https://${host}`;
       await notifyNeedsLogin(novncUrl, userId);
 
-      // Poll until the user completes login
       await waitForLogin(page);
 
-      // Give session cookies time to fully settle after login
-      console.log(
-        "[script] Login detected, waiting for session to stabilize...",
+      await postStatusUpdate(
+        "Login detected. Waiting for session to stabilize...",
+        "login_detected",
+        userId,
       );
       await page.waitForTimeout(5000);
     } else {
-      console.log(
-        "[script] Already logged in via saved profile, skipping login.",
+      await postStatusUpdate(
+        "Already logged in via saved profile.",
+        "session_restored",
+        userId,
       );
     }
 
-    // Set up session capture BEFORE navigating to marketplace so we don't
-    // miss any authenticated GraphQL requests that fire on initial page load
-    console.log(
-      "[script] Setting up request interceptor for session capture...",
+    await postStatusUpdate(
+      "Navigating to Facebook Marketplace...",
+      "navigating_marketplace",
+      userId,
     );
     const sessionPromise = captureSession(page, context);
-
-    // Now that we're authenticated, explicitly navigate to Marketplace
-    console.log("[script] Navigating to Marketplace...");
     await page.goto("https://www.facebook.com/marketplace/", {
       waitUntil: "domcontentloaded",
       timeout: 60_000,
     });
     await page.waitForTimeout(3000);
 
-    // Actively trigger GraphQL requests by interacting with page elements
+    await postStatusUpdate(
+      "Triggering authenticated requests...",
+      "triggering_graphql",
+      userId,
+    );
     await triggerMarketplaceGraphQL(page);
 
     const sessionData = await sessionPromise;
-    console.log("[script] Session captured successfully.");
+    await postStatusUpdate(
+      "Session captured successfully. Saving...",
+      "session_captured",
+      userId,
+    );
 
     await postSession(sessionData, userId);
+    await postStatusUpdate("Session refresh complete.", "done", userId);
     console.log("[script] Done! Container exiting cleanly.");
   } catch (err) {
     console.error(`[script] ERROR: ${err.message}`);
+    await postStatusUpdate(`Error: ${err.message}`, "error", userId).catch(
+      () => {},
+    );
     exitCode = 1;
   } finally {
     clearTimeout(globalTimeout);
