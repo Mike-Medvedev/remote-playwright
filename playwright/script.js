@@ -26,7 +26,9 @@ async function getSyncContext() {
   if (!data?.userId) {
     throw new Error("sync-context response missing userId");
   }
-  console.log(`[script] Sync context received. userId: ${data.userId}, containerHost: ${data.containerHost}`);
+  console.log(
+    `[script] Sync context received. userId: ${data.userId}, containerHost: ${data.containerHost}`,
+  );
   return { userId: data.userId, containerHost: data.containerHost };
 }
 
@@ -52,7 +54,12 @@ function isAuthenticatedGraphQL(request, body) {
 
 async function isLoggedIn(page) {
   const url = page.url();
-  if (url.includes("/login") || url.includes("/checkpoint") || url.includes("/recover")) return false;
+  if (
+    url.includes("/login") ||
+    url.includes("/checkpoint") ||
+    url.includes("/recover")
+  )
+    return false;
 
   const loginForm = await page
     .locator('form[action*="/login"], #login_form, input[name="email"]')
@@ -64,7 +71,7 @@ async function isLoggedIn(page) {
   const loggedInIndicator = await page
     .locator(
       '[aria-label="Your profile"], [aria-label="Account"], [data-pagelet="ProfileTail"], ' +
-      'a[href*="/marketplace"], [aria-label="Marketplace"], [role="navigation"]',
+        'a[href*="/marketplace"], [aria-label="Marketplace"], [role="navigation"]',
     )
     .first()
     .isVisible({ timeout: 8000 })
@@ -176,52 +183,68 @@ async function captureSession(page, context) {
 }
 
 async function triggerMarketplaceGraphQL(page) {
-  console.log("[script] Triggering marketplace GraphQL via element interactions...");
+  console.log(
+    "[script] Triggering authenticated GraphQL via marketplace interactions...",
+  );
 
+  // Strategy 1: Focus + click the search bar — this is the most reliable trigger
+  // because Facebook fires authenticated GraphQL requests to populate search suggestions
+  console.log("[script] Attempting search bar focus/click...");
   const searchBar = page.locator(
-    'input[aria-label="Search Marketplace"], input[placeholder*="Search Marketplace"], ' +
-    'input[aria-label="Search Facebook"], input[placeholder*="Search Facebook"]',
+    'input[type="search"][placeholder="Search Marketplace"]',
   );
-  const searchVisible = await searchBar.first().isVisible({ timeout: 5000 }).catch(() => false);
+  const searchVisible = await searchBar
+    .first()
+    .isVisible({ timeout: 8000 })
+    .catch(() => false);
   if (searchVisible) {
-    console.log("[script] Focusing search bar to trigger GraphQL...");
-    await searchBar.first().focus().catch(() => {});
-    await page.waitForTimeout(2000);
-    await searchBar.first().click().catch(() => {});
-    await page.waitForTimeout(2000);
+    console.log("[script] Search bar found, focusing and clicking...");
+    await searchBar
+      .first()
+      .hover()
+      .catch(() => {});
+    await page.waitForTimeout(1000);
+    await searchBar
+      .first()
+      .click()
+      .catch(() => {});
+    await page.waitForTimeout(3000); // give time for suggestion GraphQL to fire
+    // Press Escape to close any dropdown before moving on
+    await page.keyboard.press("Escape").catch(() => {});
+    await page.waitForTimeout(1000);
+  } else {
+    console.log("[script] Search bar not found, skipping.");
   }
 
-  const categoryLinks = page.locator(
-    'a[href*="/marketplace/categories"], a[href*="/marketplace/vehicles"], ' +
-    'a[href*="/marketplace/property"], [role="listitem"] a[href*="/marketplace"]',
-  );
-  const categoryCount = await categoryLinks.count().catch(() => 0);
-  if (categoryCount > 0) {
-    console.log(`[script] Hovering ${Math.min(categoryCount, 3)} category links...`);
-    for (let i = 0; i < Math.min(categoryCount, 3); i++) {
-      await categoryLinks.nth(i).hover({ force: true }).catch(() => {});
-      await page.waitForTimeout(1500);
+  // Strategy 2: Hover over listing items — each hover can trigger prefetch GraphQL calls
+  console.log("[script] Attempting to hover listing items...");
+  const listingItems = page.locator('a[href*="/marketplace/item/"]');
+  // Wait a moment for listings to render
+  await page
+    .waitForSelector('a[href*="/marketplace/item/"]', { timeout: 8000 })
+    .catch(() => {});
+  const listingCount = await listingItems.count().catch(() => 0);
+  if (listingCount > 0) {
+    console.log(`[script] Found ${listingCount} listings, hovering first 5...`);
+    for (let i = 0; i < Math.min(listingCount, 5); i++) {
+      await listingItems
+        .nth(i)
+        .hover({ force: true })
+        .catch(() => {});
+      await page.waitForTimeout(1000);
     }
+  } else {
+    console.log("[script] No listing items found, skipping.");
   }
 
-  const feedItems = page.locator(
-    '[data-pagelet*="Marketplace"] a, [role="article"] a, ' +
-    'a[href*="/marketplace/item/"]',
-  );
-  const feedCount = await feedItems.count().catch(() => 0);
-  if (feedCount > 0) {
-    console.log(`[script] Hovering ${Math.min(feedCount, 3)} feed items...`);
-    for (let i = 0; i < Math.min(feedCount, 3); i++) {
-      await feedItems.nth(i).hover({ force: true }).catch(() => {});
-      await page.waitForTimeout(1500);
-    }
-  }
-
-  console.log("[script] Scrolling page to trigger lazy-loaded GraphQL calls...");
+  // Strategy 3: Scroll to trigger lazy-loaded feed GraphQL
+  console.log("[script] Scrolling to trigger lazy-loaded GraphQL...");
   await page.evaluate(() => window.scrollBy(0, 600)).catch(() => {});
   await page.waitForTimeout(2000);
   await page.evaluate(() => window.scrollBy(0, 600)).catch(() => {});
   await page.waitForTimeout(2000);
+
+  console.log("[script] Interaction sequence complete.");
 }
 
 async function postSession(sessionData, userId) {
@@ -241,23 +264,31 @@ async function postSession(sessionData, userId) {
 
 function copyProfileToLocal(persistentDir, localDir) {
   if (fs.existsSync(persistentDir)) {
-    console.log(`[script] Copying profile from ${persistentDir} -> ${localDir}`);
+    console.log(
+      `[script] Copying profile from ${persistentDir} -> ${localDir}`,
+    );
     fs.cpSync(persistentDir, localDir, { recursive: true });
   } else {
-    console.log(`[script] No existing profile found, creating fresh local profile.`);
+    console.log(
+      `[script] No existing profile found, creating fresh local profile.`,
+    );
     fs.mkdirSync(localDir, { recursive: true });
   }
 }
 
 function copyProfileBack(localDir, persistentDir) {
-  console.log(`[script] Persisting profile from ${localDir} -> ${persistentDir}`);
+  console.log(
+    `[script] Persisting profile from ${localDir} -> ${persistentDir}`,
+  );
   fs.mkdirSync(persistentDir, { recursive: true });
   fs.cpSync(localDir, persistentDir, { recursive: true });
 }
 
 async function main() {
   const globalTimeout = setTimeout(() => {
-    console.error(`[script] FATAL: Global timeout reached (${TOTAL_SCRIPT_TIMEOUT_MS / 1000}s). Exiting.`);
+    console.error(
+      `[script] FATAL: Global timeout reached (${TOTAL_SCRIPT_TIMEOUT_MS / 1000}s). Exiting.`,
+    );
     process.exit(1);
   }, TOTAL_SCRIPT_TIMEOUT_MS);
 
@@ -304,35 +335,55 @@ async function main() {
 
   let exitCode = 0;
   try {
-    console.log("[script] Navigating to Facebook Marketplace...");
-    await page.goto("https://www.facebook.com/marketplace/", {
+    // Check if already logged in via saved profile before showing login page
+    console.log("[script] Checking for existing session...");
+    await page.goto("https://www.facebook.com/", {
       waitUntil: "domcontentloaded",
       timeout: 60_000,
     });
+    await page.waitForTimeout(3000);
 
-    await page.waitForTimeout(5000);
+    const alreadyLoggedIn = await isLoggedIn(page);
 
-    const loggedIn = await isLoggedIn(page);
+    if (!alreadyLoggedIn) {
+      // Explicitly navigate to /login so it reliably shows up on any device
+      console.log(
+        "[script] Not logged in. Navigating to Facebook login page...",
+      );
+      await page.goto("https://www.facebook.com/login", {
+        waitUntil: "domcontentloaded",
+        timeout: 60_000,
+      });
+      await page.waitForTimeout(2000);
 
-    if (!loggedIn) {
-      const host = containerHost || await getPublicIp();
+      // Notify backend so the user gets the noVNC link
+      const host = containerHost || (await getPublicIp());
       const novncUrl = `https://${host}`;
       await notifyNeedsLogin(novncUrl, userId);
 
+      // Poll until the user completes login
       await waitForLogin(page);
 
-      // After login, give the page time to settle and set cookies
-      console.log("[script] Login detected, waiting for session to stabilize...");
+      // Give session cookies time to fully settle after login
+      console.log(
+        "[script] Login detected, waiting for session to stabilize...",
+      );
       await page.waitForTimeout(5000);
     } else {
-      console.log("[script] Already logged in, proceeding to capture.");
+      console.log(
+        "[script] Already logged in via saved profile, skipping login.",
+      );
     }
 
-    // Navigate to marketplace and set up capture before it loads
-    console.log("[script] Setting up request interceptor for session capture...");
+    // Set up session capture BEFORE navigating to marketplace so we don't
+    // miss any authenticated GraphQL requests that fire on initial page load
+    console.log(
+      "[script] Setting up request interceptor for session capture...",
+    );
     const sessionPromise = captureSession(page, context);
 
-    console.log("[script] Navigating to Marketplace for capture...");
+    // Now that we're authenticated, explicitly navigate to Marketplace
+    console.log("[script] Navigating to Marketplace...");
     await page.goto("https://www.facebook.com/marketplace/", {
       waitUntil: "domcontentloaded",
       timeout: 60_000,
