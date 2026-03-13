@@ -102,6 +102,24 @@ async function waitForLogin(page) {
   }
 }
 
+async function dismissNotificationPrompt(page) {
+  const blockButton = page.getByRole("button", { name: /^Block$/i });
+  const closeButton = page.getByRole("button", { name: /^Close$/i });
+
+  if (await blockButton.first().isVisible({ timeout: 1500 }).catch(() => false)) {
+    console.log("[script] Blocking browser notification prompt...");
+    await blockButton.first().click().catch(() => {});
+    await page.waitForTimeout(1000);
+    return;
+  }
+
+  if (await closeButton.first().isVisible({ timeout: 1500 }).catch(() => false)) {
+    console.log("[script] Closing browser notification prompt...");
+    await closeButton.first().click().catch(() => {});
+    await page.waitForTimeout(1000);
+  }
+}
+
 async function notifyNeedsLogin(novncUrl, userId) {
   const endpoint = `${WEBHOOK_URL}/webhook/needs-login`;
   console.log(
@@ -338,6 +356,7 @@ async function main() {
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
+      "--disable-notifications",
       "--disable-blink-features=AutomationControlled",
     ],
     userAgent,
@@ -361,6 +380,7 @@ async function main() {
       timeout: 60_000,
     });
     await page.waitForTimeout(3000);
+    await dismissNotificationPrompt(page);
 
     const alreadyLoggedIn = await isLoggedIn(page);
 
@@ -375,6 +395,7 @@ async function main() {
         timeout: 60_000,
       });
       await page.waitForTimeout(2000);
+      await dismissNotificationPrompt(page);
 
       const host = containerHost || (await getPublicIp());
       const novncUrl = `https://${host}`;
@@ -383,11 +404,12 @@ async function main() {
       await waitForLogin(page);
 
       await postStatusUpdate(
-        "Login detected. Waiting for session to stabilize...",
+        'Login detected. If Facebook asks, click "Trust this device", "Save browser", or "Continue", then wait for Facebook to finish loading.',
         "login_detected",
         userId,
       );
       await page.waitForTimeout(5000);
+      await dismissNotificationPrompt(page);
     } else {
       await postStatusUpdate(
         "Already logged in via saved profile.",
@@ -407,6 +429,7 @@ async function main() {
       timeout: 60_000,
     });
     await page.waitForTimeout(3000);
+    await dismissNotificationPrompt(page);
 
     await postStatusUpdate(
       "Triggering authenticated requests...",
