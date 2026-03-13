@@ -120,30 +120,6 @@ async function dismissNotificationPrompt(page) {
   }
 }
 
-async function notifyNeedsLogin(novncUrl, userId) {
-  const endpoint = `${WEBHOOK_URL}/webhook/needs-login`;
-  console.log(
-    `[script] Notifying backend: human login required -> ${endpoint}`,
-  );
-  try {
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ novncUrl, userId }),
-    });
-    console.log(`[script] needs-login webhook response: ${res.status}`);
-    if (!res.ok) {
-      console.error(
-        `[script] needs-login webhook failed (${res.status}): ${res.statusText}`,
-      );
-      process.exit(1);
-    }
-  } catch (err) {
-    console.error(`[script] Failed to notify needs-login: ${err.message}`);
-    process.exit(1);
-  }
-}
-
 async function captureSession(page, context) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(
@@ -265,13 +241,18 @@ async function triggerMarketplaceGraphQL(page) {
   console.log("[script] Interaction sequence complete.");
 }
 
-async function postStatusUpdate(message, step, userId) {
+async function postStatusUpdate(message, step, userId, novncUrl) {
   const endpoint = `${WEBHOOK_URL}/webhook/status-update`;
   console.log(`[script] Status update (${step}): ${message}`);
   const res = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, step, userId }),
+    body: JSON.stringify({
+      message,
+      step,
+      userId,
+      ...(novncUrl ? { novncUrl } : {}),
+    }),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
@@ -399,7 +380,7 @@ async function main() {
 
       const host = containerHost || (await getPublicIp());
       const novncUrl = `https://${host}`;
-      await notifyNeedsLogin(novncUrl, userId);
+      await postStatusUpdate("Login required. Waiting for user to log in...", "needs_login", userId, novncUrl);
 
       await waitForLogin(page);
 
